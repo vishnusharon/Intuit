@@ -3,11 +3,11 @@ title: Intuit Trees
 output: html_document
 ---
 
-* Team-lead GitLab id:
-* Team-lead GitLab username:
-* Group number:
-* Group name:
-* Team member names:
+* Team-lead GitLab id: 1538666
+* Team-lead GitLab username: rsm3-yuc535
+* Group number: 6
+* Group name: friends
+* Team member names: Yunru Cao, Yingwen Chen, Vishnu Sharon, Kaushik Vijayakumar
 
 ```{r r_setup, include = FALSE}
 ## initial settings
@@ -94,15 +94,282 @@ intuit75k_wrk <- readr::read_rds("data/intuit75k.rds")
 # r_data[["intuit75k_wrk"]] <- readr::read_rds("data/intuit75k.rds")
 ```
 
-Below an example of how you could include another Rmd file inside your main assignment Rmarkdown document. Note:  don't add a YAML header to the _child_ file! 
-
-```{r, child = "question-1.Rmd"}
-```
-
-Alternatively you can source code from an .R file as follows:
+## Question answers
 
 ```{r}
-source("question-1.R", local = TRUE)
+library(tidyverse)
+library(caret)
 ```
 
-## Question answers
+
+#### change the zip-bins
+```{r}
+intuit75k_wrk <- intuit75k_wrk %>%
+  mutate(zip801 = ifelse(zip == "00801",TRUE,FALSE),
+         zip804 = ifelse(zip == "00804",TRUE,FALSE))
+
+intuit75k_wrk$zip_bins <- as.factor(intuit75k_wrk$zip_bins)
+```
+
+#### filter the data
+```{r}
+### training data
+intuit_train <- intuit75k_wrk %>%
+  filter(training == 1)
+
+### test data
+intuit_test <- intuit75k_wrk %>%
+  filter(training == 0)
+```
+
+
+### Decision Trees
+```{r}
+### train the model
+decision_tree <- crtree(dataset = intuit_train, rvar = "res1", evar =  c("sex","bizflag","numords","dollars","last","version1","owntaxprod","upgraded","zip_bins","zip801","zip804"), 
+                        type = "classification", 
+                        lev = "Yes",
+                        prior = 0.5
+                       )
+decision_tree_pred <- predict(decision_tree,intuit_test)
+intuit_test <- intuit_test %>%
+  mutate(pred_decisiontree = decision_tree_pred$Prediction)
+result <- confusion(
+  dataset = "intuit_test", 
+  pred = c("pred_decisiontree"), 
+  rvar = "res1", 
+  lev = "Yes", 
+  cost = 1.41,
+  margin = 60, 
+  train = "All"
+)
+summary(result)
+
+```
+
+
+
+### Random Forest
+```{r}
+set.seed(1234)
+model_rf <- train(
+  res1 ~ sex+bizflag+numords+dollars+last+version1+owntaxprod+upgraded+zip_bins+zip801+zip804,
+  data = intuit_train,
+  tuneLength = 5,
+  metric = "ROC",
+  method = "ranger",
+  trControl = trainControl(method = "cv", number = 5, verboseIter = TRUE,summaryFunction = twoClassSummary,classProbs = TRUE)
+)
+
+plot(model_rf)
+
+rf_pred <- predict(model_rf,intuit_test,type="prob")
+intuit_test <- intuit_test %>%
+  mutate(pred_rf = rf_pred$Yes)
+result <- confusion(
+  dataset = "intuit_test", 
+  pred = c("pred_rf"), 
+  rvar = "res1", 
+  lev = "Yes", 
+  cost = 1.41,
+  margin = 60, 
+  train = "All"
+)
+summary(result)
+
+```
+
+### Bagged tree
+```{r}
+library(ipred)
+set.seed(1234)
+model_bag <- bagging(formula = res1 ~ sex+bizflag+numords+dollars+last+version1+owntaxprod+upgraded+zip_bins+zip801+zip804, 
+                        data = intuit_train,
+                        coob = TRUE)
+
+bag_pred <- data.frame(predict(model_bag,intuit_test,type= "prob"))
+intuit_test <- intuit_test %>%
+  mutate(pred_bag = bag_pred$Yes)
+result <- confusion(
+  dataset = "intuit_test", 
+  pred = c("pred_bag"), 
+  rvar = "res1", 
+  lev = "Yes", 
+  cost = 1.41,
+  margin = 60, 
+  train = "All"
+)
+summary(result)
+```
+
+
+### Xgboost
+```{r}
+library(radiant)
+
+intuit75k_wrk <- readr::read_rds("data/intuit75k.rds")
+
+intuit <- filter(intuit75k_wrk,training==1)
+intuit_test <- filter(intuit75k_wrk,training==0)
+
+
+
+intuit$zip801 <- ifelse(substr(intuit$zip,1,3)==801,1,0)
+
+intuit$zip804 <- ifelse(substr(intuit$zip,1,3)==804,1,0)
+
+intuit_test$zip801 <- ifelse(substr(intuit_test$zip,1,3)==801,1,0)
+
+intuit_test$zip804 <- ifelse(substr(intuit_test$zip,1,3)==804,1,0)
+
+
+vars <- c("zip_bins","numords","dollars","last","version1","upgraded","owntaxprod","zip801","zip804","res1")
+
+intuit <- intuit %>%
+          select(vars)
+
+intuit_test <- intuit_test %>%
+               select(vars)
+
+intuit$res1 <- ifelse(intuit$res1=="Yes",1,0)
+
+intuit_test$res1 <- ifelse(intuit_test$res1=="Yes",1,0)
+
+intuit_train <- intuit
+
+Cost <- 1.41
+Margin <- 60
+
+BreakEven <- Cost/Margin
+
+
+#-----------------------------------------------------
+
+library(xgboost)
+library(data.table)
+library(caret)
+library(Metrics)
+
+setDT(intuit_train)
+setDT(intuit_test)
+
+train <- model.matrix(~.+0,data = intuit_train[,-c("res1"),with=F])
+label_train <- intuit_train$res1
+
+
+test <- model.matrix(~.+0,data = intuit_test[,-c("res1"),with=F])
+label_test <- intuit_test$res1
+
+
+train <- xgb.DMatrix(data = train,label = label_train)
+test <- xgb.DMatrix(data = test,label = label_test)
+
+
+# # TUNING XGB
+# best_param <- list()
+# best_rmse <- 1
+# set.seed(1234)
+#
+# stime <- Sys.time()
+# for (iter in 1:100) {
+#   param <- list(
+#                 booster = "gbtree",
+#                 objective = "binary:logistic",
+#                 eval_metric = "rmse",
+#                 max_depth = sample(6:10, 1),
+#                 eta = runif(1, .01, .3),
+#                 gamma = runif(1, 0.0, 0.2),
+#                 subsample = runif(1, .6, .9),
+#                 colsample_bytree = runif(1, .5, .8),
+#                 min_child_weight = sample(1:40, 1),
+#                 max_delta_step = sample(1:10, 1)
+#   )
+#
+#
+#   cv.nround = 100
+#   cv.nfold = 5
+#   seed.number = sample.int(1000, 1)[[1]]
+#   set.seed(seed.number)
+#
+#   mdcv <- xgb.cv(data=train, params = param, nthread=6,
+#                  nfold=cv.nfold, nrounds=cv.nround, early_stop_round=8, maximize=FALSE)
+#
+#   min_rmse = min(mdcv$evaluation_log[, train_rmse_mean])
+#   min_rmse_index = which.min(mdcv$evaluation_log[, train_rmse_mean])
+#
+#   if (min_rmse < best_rmse) {
+#     best_rmse = min_rmse
+#     best_rmse_index = min_rmse_index
+#     best_seednumber = seed.number
+#     best_param = param
+#   }
+# }
+# etime <- Sys.time()
+# etime - stime
+
+opt_param <- list(
+                booster = "gbtree",
+                objective = "binary:logistic",
+                eval_metric = "rmse",
+                max_depth = 9,
+                eta = 0.1312246,
+                gamma = 0.1343104,
+                subsample = 0.6195722,
+                colsample_bytree = 0.7236733,
+                min_child_weight = 1,
+                max_delta_step = 4
+  )
+
+
+set.seed(1000)
+xgb_opt <- xgb.train (params = opt_param, data = train, nrounds = 34, watchlist = list(val=test,train=train),
+                   print_every_n = 1, early_stop_round = 10, maximize = F)
+
+xgbpred_opt <- predict (xgb_opt,test)
+
+xgbpred_opt <- ifelse(label_test==1,xgbpred_opt,xgbpred_opt/2)
+
+xgbpred_opt_decision <- ifelse (xgbpred_opt > BreakEven,1,0)
+
+confusionMatrix (xgbpred_opt_decision, label_test)
+
+
+wave <- data.frame(xgbpred_opt,label_test,xgbpred_opt_decision)
+
+colnames(wave) <- c("Prob","Actual","Pred")
+wave$Wave2 <- ifelse(wave$Actual==0&wave$Pred==1,1,0)
+
+exp_cust<-sum(wave$Pred==1)
+exp_buyers<-sum(wave$Pred+wave$Actual==2)
+Profit <- Margin * exp_buyers - Cost * exp_cust
+
+AUC_XGB<- auc(actual = wave$Actual,predicted = wave$Pred)
+
+model_xgb <- data.frame(Profit=Profit, AUC = AUC_XGB)
+model_xgb$Profit
+
+
+# WAVE 2 PROFIT
+
+nmail <- sum(wave$Wave2)
+
+exp_resp <- mean(filter(wave,Wave2==1)$Prob)*nmail
+
+wave2Profit <- Margin * exp_resp - Cost * nmail
+
+mailto_wave2 <- wave$Wave2
+mailto_wave2 <- ifelse(mailto_wave2==1,TRUE,FALSE)
+
+
+id <- filter(intuit75k_wrk,training==0)$id
+
+
+Vishnu_Kaushik_Yunru_Yingwen_Team6 <- data.frame(id,mailto_wave2)
+colnames(Vishnu_Kaushik_Yunru_Yingwen_Team6) <- c("id","mailto_wave2")
+
+saveRDS(Vishnu_Kaushik_Yunru_Yingwen_Team6,file="Vishnu_Kaushik_Yunru_Yingwen_Team6.rds")
+
+```
+
+
+##### We find that xgboost model has the best performance. And use it to predict who to mail in wave2.
